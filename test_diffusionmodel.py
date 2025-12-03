@@ -18,37 +18,28 @@ from diffusers import AutoencoderKL
 
 
 def save_tensor_as_image(tensor, filename="output.png"):
-    # Check tensor shape
     if tensor.shape != (1, 3, 512, 512):
         raise ValueError("Expected tensor shape [1, 3, 512, 512]")
 
-    # Remove batch dimension
     tensor = tensor.squeeze(0)  # Shape: [3, 512, 512]
 
-    # Convert tensor to PIL Image
-    # Assuming tensor is on GPU, move to CPU and convert to numpy
     tensor = tensor.cpu().detach()
 
-    # If tensor is in [0, 1], scale to [0, 255]
     tensor = ((tensor + 1)/2)*255
 
-    # Convert to uint8
     tensor = tensor.clamp(0, 255).byte()
 
-    # Permute dimensions from [C, H, W] to [H, W, C] for PIL
     tensor = tensor.permute(1, 2, 0)  # Shape: [512, 512, 3]
 
-    # Convert to numpy array
     image_array = tensor.numpy()
 
-    # Create PIL Image
     image = Image.fromarray(image_array)
 
-    # Save the image
     image.save(filename)
     print(f"Image saved as {filename}")
 
 class NoiseScheduler:
+    """Standard DDPM noise scheduler – linear or cosine beta schedule."""
     def __init__(self, timesteps=1000, beta_schedule="linear", device='cpu'):
         self.timesteps = timesteps
         self.device = torch.device(device)
@@ -65,6 +56,7 @@ class NoiseScheduler:
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0).to(self.device)
 
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod).to(self.device)
+
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod).to(self.device)
 
     def _linear_beta_schedule(self, timesteps, start=0.0001, end=0.02):
@@ -80,7 +72,6 @@ class NoiseScheduler:
     def get_noisy_image(self, x_0, t, noise=None):
         """
         Adds noise to the original image x_0 at time t.
-        x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * epsilon
         """
         if noise is None:
             noise = torch.randn_like(x_0, device=self.device)
@@ -129,21 +120,6 @@ class SinusoidalPositionalEmbedding(nn.Module):
         time_embedding = torch.cat((time_embedding.sin(), time_embedding.cos()), dim=-1)
         return time_embedding
 
-class TimeEmbeddingMLP(nn.Module):
-    """
-    MLP to process the sinusoidal time embedding into scale and shift parameters.
-    """
-    def __init__(self, dim, hidden_dim, out_dim):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, out_dim)
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
 class AdaptiveGroupNorm(nn.Module):
     """
     Adaptive Group Normalization (AdaGN) layer.
@@ -168,6 +144,9 @@ class AdaptiveGroupNorm(nn.Module):
         return output
 
 class ContractingBlock(nn.Module):
+    """
+    Encoder blocks of the Unet, using two convolutions and residual connections.
+    """
     def __init__(self, in_channels, out_channels, time_emb_dim, use_dropout=False):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
@@ -202,6 +181,9 @@ class ContractingBlock(nn.Module):
         return x
 
 class ExpandingBlock(nn.Module):
+    """
+    Decoder blocks of the Unet, using two convolutions, residual connections and skip connections.
+    """
     def __init__(self, in_channels, out_channels, time_emb_dim, use_dropout=False):
         super().__init__()
         self.upsample = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
@@ -224,7 +206,7 @@ class ExpandingBlock(nn.Module):
 
         if x.shape != skip_con_x.shape:
              x = torch.nn.functional.interpolate(x, size=skip_con_x.shape[2:], mode='nearest')
-
+        # Skip connection
         x = torch.cat([x, skip_con_x], dim=1)
 
         identity = self.residual_conv(x)
@@ -248,8 +230,13 @@ class FeatureMapBlock(nn.Module):
         return self.conv(x)
 
 class UNet(nn.Module):
+    """
+    Unet network using six encoder layers and six decoder layers.
+    """
     def __init__(self, input_channels, output_channels, hidden_channels=64, time_emb_dim=256): # Added time_emb_dim
         super().__init__()
+
+        # Applying an MLP to the Sinusoidal positional embedding to create a richer vector of the time (t).
 
         self.time_mlp = nn.Sequential(
             SinusoidalPositionalEmbedding(time_emb_dim),
@@ -305,6 +292,9 @@ class UNet(nn.Module):
         return xn
 
 class Vgg19(nn.Module):
+    """
+        VGG19 layers for the perceptual loss of the Unet.
+    """
     def __init__(self, requires_grad=False):
         super(Vgg19, self).__init__()
         vgg_pretrained_features = models.vgg19(pretrained=True).features
@@ -344,6 +334,9 @@ class Vgg19(nn.Module):
         return out
 
 class VGGLoss(nn.Module):
+    """
+        Perceptual loss of the Unet.
+    """
     def __init__(self,layids = None):
         super(VGGLoss, self).__init__()
         self.vgg = Vgg19()
@@ -361,7 +354,9 @@ class VGGLoss(nn.Module):
         return loss
 
 class DDIM():
-
+    """
+        Execution of the Denoising Diffusion Implicit Model with 200 steps.
+    """
   def __init__(self, output_size, checkpoint_ddpm, checkpoint_warping, vae_autoencoder):
 
     self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -387,20 +382,21 @@ class DDIM():
     self.scheduler = NoiseScheduler(timesteps=1000, beta_schedule="linear", device=self.device)
 
   def encode_latents(self, images):
-    # images: [B,3,H,W], range [-1,1]
+    # Encoding image into a latent space
     with torch.no_grad():
         latents = self.vae.encode(images).latent_dist.sample()
         latents = latents * 0.18215  # SD scaling factor
     return latents
 
   def decode_latents(self, latents):
+      # Decoding the latent space image.
     latents = latents / 0.18215
     with torch.no_grad():
         imgs = self.vae.decode(latents).sample
     return imgs
 
   def __call__(self, person_img, cloth_img):
-
+    # Load the DDPM and Warping models checkpoints.
     self.viton.load_state_dict(self.checkpoint_ddpm['model_state_dict'])
     self.viton_opt.load_state_dict(self.checkpoint_ddpm['optimizer_state_dict'])
 
@@ -415,6 +411,8 @@ class DDIM():
     timesteps_to_sample = torch.linspace(self.scheduler.timesteps - 1, 0, 200).to(self.device).long()
     x_current, _ = self.scheduler.get_noisy_image(z_test_input_viton, timesteps_to_sample[0])
 
+    # DDIM process
+
     with torch.no_grad():
       for i, t in enumerate(timesteps_to_sample):
         t_prev = timesteps_to_sample[i + 1] if i < len(timesteps_to_sample) - 1 else 0
@@ -426,21 +424,15 @@ class DDIM():
         alpha_bar_t_val = self.scheduler.alphas_cumprod[t].item()
         x_0_pred = (x_current - math.sqrt(1.0 - alpha_bar_t_val) * predicted_noise) / math.sqrt(alpha_bar_t_val)
 
-        #x_0_pred = torch.clamp(x_0_pred, -1.0, 1.0)
+
         alpha_bar_t_prev_val = self.scheduler.alphas_cumprod[t_prev].item()
         x_current = math.sqrt(alpha_bar_t_prev_val) * x_0_pred + math.sqrt(1.0 - alpha_bar_t_prev_val) * predicted_noise
 
-        #x_current = torch.clamp(x_current, -1.0, 1.0)
+        x_current = torch.clamp(x_current, -1.0, 1.0)
 
         x_0_pred = self.decode_latents(x_0_pred)
 
-        # if (i+1) % 10 == 0:
-
-        #   plt.figure(figsize=(3, 3))
-        #   plt.imshow((x_0_pred[0].permute(1, 2, 0).cpu().numpy() + 1)/2)
-        #   plt.title(f"DDIM Step {i+1} (t={t.item()})")
-        #   plt.axis('off')
-        #   plt.show()
+        x_0_pred = torch.clamp(x_0_pred, -1.0, 1.0)
 
     return x_0_pred
 
