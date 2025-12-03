@@ -42,5 +42,12 @@ The warping process was trained with 3000 images resized to 256x256 and the outp
 
 Mainly due to the lack of resources cross attention mechanism cant be added to the diffusion network and the process only can be trained with batch = 1, however the results are not bad, and it says to us that the whole model works, the idea is to obtain more resources to increase the data from 2k to at least 5k images, improve Unet network and add cross attention mechanism and increases the batch size to at least 10.
 
+**Results**
+
+<img width="256" height="512" alt="image" src="https://github.com/user-attachments/assets/0ae36f07-c350-46a4-8fb4-0d124d1f4311" /><img width="256" height="512" alt="image" src="https://github.com/user-attachments/assets/481bdc94-f756-451a-ab11-95b0c2d6a92c" /><img width="256" height="512" alt="image" src="https://github.com/user-attachments/assets/fed6625d-d7ef-49bf-99c4-c583e3f54982" />
+
+
+
+
 
 
