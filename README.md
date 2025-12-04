@@ -2,9 +2,14 @@
 
 
 
-Designed, implemented, and deployed an end-to-end Virtual Try-On application on Hugging Face Spaces using **Flow based Warping** and **Difussion Models.** You can use the application here:
+Designed, implemented, and deployed an end-to-end Virtual Try-On application on Hugging Face Spaces using **Flow based Warping** and **Difussion Models.** You can use the app here:
 
 https://huggingface.co/spaces/dmc98/VirtualTryOn\_from\_scratch
+
+**Preprocessing**
+
+
+In the parsehuman.py file you can see all the preprocessing part of the model, it extracts from an image, densepose, keypoints, body segmentation, agnostic mask and cloth mask.
 
 
 
@@ -20,7 +25,7 @@ The warping process is a geometric alignment that use a multi-scale flow predict
 
 
 
-The structure is based in a Noise Scheduler that adds noise to the output of the warping module, after that, it pass through a Unet network that uses Adaptative normalization and SE Blocks and it predicts the noise added to the image, for this noise prediction MSE loss is used and for perceptual loss, VGG19 layers are used to compare the denoised image with the original image. Part of the process is based in the "Taming the Power of Diffusion Models for High-Quality Virtual Try-On with Appearance Flow" **https://arxiv.org/pdf/2308.06101**
+The structure is based in a Noise Scheduler that adds noise to the output of the warping module, after that, the images are passed through a KL-regularized autoencoder with latent-space downsampling factor 𝑓 = 8 so the latent image have size 64x64, next, it pass through a Unet network that uses Adaptative normalization and SE Blocks and it predicts the noise added to the image, for this noise prediction MSE loss is used and for perceptual loss, VGG19 layers are used to compare the denoised image with the original image. Part of the process is based in the "Taming the Power of Diffusion Models for High-Quality Virtual Try-On with Appearance Flow" **https://arxiv.org/pdf/2308.06101**
 
 
 

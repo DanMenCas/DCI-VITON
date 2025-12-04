@@ -6,8 +6,8 @@ import math
 import matplotlib.pyplot as plt
 
 from diffusers import AutoencoderKL
-from test_diffusionmodel import UNet, NoiseScheduler
-from test_warpingnetwork import WarpingCloth
+from diffusionmodel import UNet, NoiseScheduler
+from warpingnetwork import WarpingCloth
 from torchvision import transforms
 from PIL import Image
 
@@ -78,13 +78,15 @@ class VitonPipeline():
         alpha_bar_t_val = self.scheduler.alphas_cumprod[t].item()
         x_0_pred = (x_current - math.sqrt(1.0 - alpha_bar_t_val) * predicted_noise) / math.sqrt(alpha_bar_t_val)
 
-        #x_0_pred = torch.clamp(x_0_pred, -1.0, 1.0)
+        
         alpha_bar_t_prev_val = self.scheduler.alphas_cumprod[t_prev].item()
         x_current = math.sqrt(alpha_bar_t_prev_val) * x_0_pred + math.sqrt(1.0 - alpha_bar_t_prev_val) * predicted_noise
 
-        #x_current = torch.clamp(x_current, -1.0, 1.0)
+        x_current = torch.clamp(x_current, -1.0, 1.0)
 
         x_0_pred = self.decode_latents(x_0_pred)
+
+        x_0_pred = torch.clamp(x_0_pred, -1.0, 1.0)
 
     return x_0_pred
 

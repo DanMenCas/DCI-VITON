@@ -1,5 +1,5 @@
 
-from test_warpingnetwork import WarpingCloth
+from warpingnetwork import WarpingCloth
 
 import torch
 import torch.nn as nn
@@ -16,27 +16,6 @@ from torchvision import transforms
 from PIL import Image
 from diffusers import AutoencoderKL
 
-
-def save_tensor_as_image(tensor, filename="output.png"):
-    if tensor.shape != (1, 3, 512, 512):
-        raise ValueError("Expected tensor shape [1, 3, 512, 512]")
-
-    tensor = tensor.squeeze(0)  # Shape: [3, 512, 512]
-
-    tensor = tensor.cpu().detach()
-
-    tensor = ((tensor + 1)/2)*255
-
-    tensor = tensor.clamp(0, 255).byte()
-
-    tensor = tensor.permute(1, 2, 0)  # Shape: [512, 512, 3]
-
-    image_array = tensor.numpy()
-
-    image = Image.fromarray(image_array)
-
-    image.save(filename)
-    print(f"Image saved as {filename}")
 
 class NoiseScheduler:
     """Standard DDPM noise scheduler – linear or cosine beta schedule."""
@@ -143,9 +122,31 @@ class AdaptiveGroupNorm(nn.Module):
         output = normed_x * (1 + scale) + shift
         return output
 
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super(SEBlock, self).__init__()
+        # Global Average Pooling
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        # Fully Connected Layers (bottleneck)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        # Squeeze: Global pooling
+        y = self.avg_pool(x).view(b, c)
+        # Excitation: Learn weights
+        y = self.fc(y).view(b, c, 1, 1)
+        # Scale the original input
+        return x * y.expand_as(x)
+
 class ContractingBlock(nn.Module):
     """
-    Encoder blocks of the Unet, using two convolutions and residual connections.
+    Encoder blocks of the Unet, using two convolutions, SE Block and residual connections.
     """
     def __init__(self, in_channels, out_channels, time_emb_dim, use_dropout=False):
         super().__init__()
@@ -164,6 +165,8 @@ class ContractingBlock(nn.Module):
             self.dropout = nn.Dropout(0.3)
         self.use_dropout = use_dropout
 
+        self.se = SEBlock(out_channels)
+
     def forward(self, x, time_emb):
         identity = self.residual_conv(x)
 
@@ -177,12 +180,14 @@ class ContractingBlock(nn.Module):
             x = self.dropout(x)
         x = self.activation(x)
 
+        x = self.se(x)
+
         x = self.downsample(x + identity)
         return x
 
 class ExpandingBlock(nn.Module):
     """
-    Decoder blocks of the Unet, using two convolutions, residual connections and skip connections.
+    Decoder blocks of the Unet, using two convolutions, SE Block, residual connections and skip connections.
     """
     def __init__(self, in_channels, out_channels, time_emb_dim, use_dropout=False):
         super().__init__()
@@ -200,6 +205,8 @@ class ExpandingBlock(nn.Module):
         self.use_dropout = use_dropout
 
         self.residual_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+        self.se = SEBlock(out_channels)
 
     def forward(self, x, skip_con_x, time_emb):
         x = self.upsample(x)
@@ -220,6 +227,9 @@ class ExpandingBlock(nn.Module):
         if self.use_dropout:
             x = self.dropout(x)
         x = self.activation(x)
+
+        x = self.se(x)
+
         return x + identity
 
 class FeatureMapBlock(nn.Module):
@@ -290,149 +300,4 @@ class UNet(nn.Module):
         xn = self.downfeature(x12)
 
         return xn
-
-class Vgg19(nn.Module):
-    """
-        VGG19 layers for the perceptual loss of the Unet.
-    """
-    def __init__(self, requires_grad=False):
-        super(Vgg19, self).__init__()
-        vgg_pretrained_features = models.vgg19(pretrained=True).features
-        self.slice1 = torch.nn.Sequential()
-        self.slice2 = torch.nn.Sequential()
-        self.slice3 = torch.nn.Sequential()
-        self.slice4 = torch.nn.Sequential()
-        self.slice5 = torch.nn.Sequential()
-        for x in range(2):
-            self.slice1.add_module(str(x), vgg_pretrained_features[x])
-        for x in range(2, 7):
-            self.slice2.add_module(str(x), vgg_pretrained_features[x])
-        for x in range(7, 12):
-            self.slice3.add_module(str(x), vgg_pretrained_features[x])
-        for x in range(12, 21):
-            self.slice4.add_module(str(x), vgg_pretrained_features[x])
-        for x in range(21, 30):
-            self.slice5.add_module(str(x), vgg_pretrained_features[x])
-        if not requires_grad:
-            for param in self.parameters():
-                param.requires_grad = False
-
-        self.normalize = T.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    def forward(self, X):
-
-        X = (X + 1) / 2
-        X = self.normalize(X)
-
-        h_relu1 = self.slice1(X)
-        h_relu2 = self.slice2(h_relu1)
-        h_relu3 = self.slice3(h_relu2)
-        h_relu4 = self.slice4(h_relu3)
-        h_relu5 = self.slice5(h_relu4)
-        out = [h_relu1, h_relu2, h_relu3, h_relu4, h_relu5]
-        return out
-
-class VGGLoss(nn.Module):
-    """
-        Perceptual loss of the Unet.
-    """
-    def __init__(self,layids = None):
-        super(VGGLoss, self).__init__()
-        self.vgg = Vgg19()
-        self.criterion = nn.L1Loss()
-        self.weights = [1.0/32, 1.0/16, 1.0/8, 1.0/4, 1.0]
-        self.layids = layids
-
-    def forward(self, x, y):
-        x_vgg, y_vgg = self.vgg(x), self.vgg(y)
-        loss = 0
-        if self.layids is None:
-            self.layids = list(range(len(x_vgg)))
-        for i in self.layids:
-            loss += self.weights[i] * self.criterion(x_vgg[i], y_vgg[i].detach())
-        return loss
-
-class DDIM():
-    """
-        Execution of the Denoising Diffusion Implicit Model with 200 steps.
-    """
-  def __init__(self, output_size, checkpoint_ddpm, checkpoint_warping, vae_autoencoder):
-
-    self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    self.checkpoint_ddpm = checkpoint_ddpm
-    self.checkpoint_warping = checkpoint_warping
-
-    self.size = output_size
-
-    self.transform = transforms.Compose([
-            transforms.Resize(self.size),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5])
-        ])
-
-    # Load pretrained Stable Diffusion VAE
-    self.vae = vae_autoencoder
-    self.vae.eval()  # keep frozen
-
-    self.viton = UNet(9, 4).to(self.device)
-    self.viton_opt = torch.optim.AdamW(self.viton.parameters(), lr=0.00001, betas=(0.5, 0.999))
-
-    self.scheduler = NoiseScheduler(timesteps=1000, beta_schedule="linear", device=self.device)
-
-  def encode_latents(self, images):
-    # Encoding image into a latent space
-    with torch.no_grad():
-        latents = self.vae.encode(images).latent_dist.sample()
-        latents = latents * 0.18215  # SD scaling factor
-    return latents
-
-  def decode_latents(self, latents):
-      # Decoding the latent space image.
-    latents = latents / 0.18215
-    with torch.no_grad():
-        imgs = self.vae.decode(latents).sample
-    return imgs
-
-  def __call__(self, person_img, cloth_img):
-    # Load the DDPM and Warping models checkpoints.
-    self.viton.load_state_dict(self.checkpoint_ddpm['model_state_dict'])
-    self.viton_opt.load_state_dict(self.checkpoint_ddpm['optimizer_state_dict'])
-
-    warping = WarpingCloth((256, 256), self.checkpoint_warping)
-
-    self.input_viton = ((warping(person_img, cloth_img) - 0.5)/0.5).to(device)
-    self.agnostic_mask = self.transform(warping.agnostic_mask).unsqueeze(0).repeat(1, 3, 1, 1).to(device)
-
-    z_test_input_viton = self.encode_latents(self.input_viton)
-    z_test_mask_image = F.interpolate(self.agnostic_mask, size=z_test_input_viton.shape[-2:], mode="nearest")
-
-    timesteps_to_sample = torch.linspace(self.scheduler.timesteps - 1, 0, 200).to(self.device).long()
-    x_current, _ = self.scheduler.get_noisy_image(z_test_input_viton, timesteps_to_sample[0])
-
-    # DDIM process
-
-    with torch.no_grad():
-      for i, t in enumerate(timesteps_to_sample):
-        t_prev = timesteps_to_sample[i + 1] if i < len(timesteps_to_sample) - 1 else 0
-
-        input_to_unet = torch.cat([x_current, z_test_input_viton, z_test_mask_image[:, 0:1, :, :]], dim=1)
-
-        predicted_noise = self.viton(input_to_unet, torch.tensor([t]).to(self.device))
-
-        alpha_bar_t_val = self.scheduler.alphas_cumprod[t].item()
-        x_0_pred = (x_current - math.sqrt(1.0 - alpha_bar_t_val) * predicted_noise) / math.sqrt(alpha_bar_t_val)
-
-
-        alpha_bar_t_prev_val = self.scheduler.alphas_cumprod[t_prev].item()
-        x_current = math.sqrt(alpha_bar_t_prev_val) * x_0_pred + math.sqrt(1.0 - alpha_bar_t_prev_val) * predicted_noise
-
-        x_current = torch.clamp(x_current, -1.0, 1.0)
-
-        x_0_pred = self.decode_latents(x_0_pred)
-
-        x_0_pred = torch.clamp(x_0_pred, -1.0, 1.0)
-
-    return x_0_pred
 
