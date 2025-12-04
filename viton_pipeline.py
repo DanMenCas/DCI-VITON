@@ -11,7 +11,6 @@ from warpingnetwork import WarpingCloth
 from torchvision import transforms
 from PIL import Image
 
-# Commented out IPython magic to ensure Python compatibility.
 class VitonPipeline():
 
   def __init__(self, output_size, checkpoint_ddpm, checkpoint_warping, vae_autoencoder):
@@ -31,7 +30,7 @@ class VitonPipeline():
 
     # Load pretrained Stable Diffusion VAE
     self.vae = vae_autoencoder
-    self.vae.eval()  # keep frozen
+    self.vae.eval()
 
     self.viton = UNet(9, 4).to(self.device)
     self.viton_opt = torch.optim.AdamW(self.viton.parameters(), lr=0.00001, betas=(0.5, 0.999))
@@ -39,7 +38,7 @@ class VitonPipeline():
     self.scheduler = NoiseScheduler(timesteps=1000, beta_schedule="linear", device=self.device)
 
   def encode_latents(self, images):
-    # images: [B,3,H,W], range [-1,1]
+
     with torch.no_grad():
         latents = self.vae.encode(images).latent_dist.sample()
         latents = latents * 0.18215  # SD scaling factor
